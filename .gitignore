@@ -127,3 +127,13 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+nc/*
+csv/*
+openaq-fetches.s3.amazonaws.com/*
+no2/*
+so2/*
+o3/*
+co/*
+pm25/*
+pm10/*
