@@ -139,7 +139,14 @@ for outdate in outputdates:
     ii = i[inside]
     ji = j[inside]
     vals = np.array(vals)[inside]
+    if vals.size == 0:
+        if verbose > 0:
+            print('No valid data')
+        continue
+
     if makecsv:
+        if verbose > 0:
+            print('Making csv')
         lons = np.array(lons)[inside]
         dates = np.array(dates)[inside]
         lats = np.array(lats)[inside]
@@ -153,6 +160,8 @@ for outdate in outputdates:
         pd.DataFrame.from_dict(outd).to_csv(csvpath, index=False)
 
     if makencf:
+        if verbose > 0:
+            print('Making ncf')
         sample = np.array([ti, ji, ii, vals]).T
         bins = [
             np.arange(ntimes + 1) - 0.5,
