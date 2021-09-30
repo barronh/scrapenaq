@@ -56,5 +56,5 @@ for dirpath in dirpaths:
                     param[outpath].append(l)
 
         for outpath, val in param.items():
-            with open(outpath, 'w') as outf:
+            with open(outpath, 'w', encoding='utf-8') as outf:
                 outf.write('\n'.join(val))

@@ -16,6 +16,11 @@ parser = argparse.ArgumentParser()
 parser.add_argument('-g', '--griddesc', default='GRIDDESC')
 parser.add_argument('-v', '--verbose', default=0, action='count')
 parser.add_argument(
+    '-a', '--averaginghours', default=1, type=int,
+    help='Number of hours in an averaging period. 1 or 24'
+)
+
+parser.add_argument(
     '--no-csv', dest='csv', default=True, action='store_false'
 )
 parser.add_argument(
@@ -32,33 +37,52 @@ outputdates = pd.date_range(args.startdate, args.enddate)
 GDNAM = args.GDNAM
 verbose = args.verbose
 param = args.parameter
+avghours = args.averaginghours
 
 missing = [-999]
-ugm3s = (b'<C2><B5>m<C3><B4>', b'\xc2\xb5g/m\xc2\xb3')
+ugm3s = (b'micrograms/m**3', b'<C2><B5>m<C3><B4>', b'\xc2\xb5g/m\xc2\xb3')
 gf = pnc.pncopen('GRIDDESC', format='griddesc', GDNAM=GDNAM)
 gf.SDATE = int(outputdates[0].strftime('%Y%j'))
 gf.TSTEP = 10000
 del gf.variables['TFLAG']
 gf.updatemeta()
-outf = gf.renameVariables(DUMMY='O3').slice(TSTEP=np.zeros(24, dtype='i'))
-ovar = outf.variables['O3']
-nvar = outf.copyVariable(ovar, key='O3N')
+outkey = param.upper()
+outf = gf.subset(['DUMMY']).renameVariables(DUMMY=outkey).slice(
+    TSTEP=np.zeros(24 // avghours, dtype='i')
+)
+outf.TSTEP = avghours * 10000
 
+ovar = outf.variables[outkey]
+nvar = outf.copyVariable(ovar, key=outkey + 'N')
+ovar.long_name = outkey.ljust(16)
+ovar.var_desc = ovar.long_name.ljust(80)
+nvar.long_name = ('N' + outkey).ljust(16)
+nvar.var_desc = nvar.long_name.ljust(80)
+nvar.units = '1'.ljust(16)
 
-outtmpl = '{0}/{1}/OPENAQ.{1}.{2}.{3}.{0}'.format
+delattr(outf, 'VAR-LIST')
+del outf.variables['TFLAG']
+outf.updatemeta()
+setattr(outf, 'VAR-LIST', ovar.long_name + nvar.long_name)
+outf.NVARS = 2
+outf.createDimension('VAR', 2)
+outf.updatetflag(overwrite=True)
+
+ncftmpl = f'nc/{GDNAM}/OPENAQ.{GDNAM}.%F.{param}.{avghours:02d}H.nc'
+csvtmpl = f'csv/{GDNAM}/OPENAQ.{GDNAM}.%F.{param}.{avghours:02d}H.csv'
 for outdate in outputdates:
-    ncfpath = outtmpl('nc', GDNAM, outdate.strftime('%F'), param)
-    csvpath = outtmpl('csv', GDNAM, outdate.strftime('%F'), param)
+    ncfpath = outdate.strftime(ncftmpl)
+    csvpath = outdate.strftime(csvtmpl)
     csvdir = os.path.dirname(csvpath)
     ncfdir = os.path.dirname(ncfpath)
     ncfexists = os.path.exists(ncfpath)
     csvexists = os.path.exists(csvpath)
     if args.netcdf and ncfexists:
-        print('Keeping cached', ncfpath)
+        warn('Keeping cached', ncfpath)
     else:
         os.makedirs(ncfdir, exist_ok=True)
     if args.csv and csvexists:
-        print('Keeping cached', csvpath)
+        warn('Keeping cached', csvpath)
     else:
         os.makedirs(csvdir, exist_ok=True)
     makecsv = (args.csv and not csvexists)
@@ -71,12 +95,13 @@ for outdate in outputdates:
     ))
     rdate = outdate
     outf.SDATE = int(rdate.strftime('%Y%j'))
-    outf.TSTEP = 10000
+    outf.TSTEP = avghours * 10000
     del outf.variables['TFLAG']
-    outf.updatemeta()
+    outf.updatetflag(overwrite=True)
     ovar[:] = 0
     nvar[:] = 0
     lines = []
+    print(len(paths))
     for path in paths:
         print()
         print(path, flush=True, end='')
@@ -97,8 +122,14 @@ for outdate in outputdates:
             warn('Skipping values with empty coordinates')
             continue
         ap = data.get("averagingPeriod", {'value': 0, 'unit': 'unknown'})
-        if ap['value'] != 1 or ap['unit'].strip().lower() != 'hours':
-            warn('Skipping values with non 1-hour averaging periods')
+        apvalue = ap['value']
+        apunit = ap['unit'].strip().lower()
+        if (apvalue != avghours or apunit != 'hours'):
+            warn(
+                f'Skipping values with non {avghours}-hour'
+                + f' averaging periods {apunit} {apvalue}'
+            )
+            continue
 
         lat = coord['latitude']
         lon = coord['longitude']
@@ -112,14 +143,25 @@ for outdate in outputdates:
             warn('Skipping negative values: {}'.format(val))
             continue
         unit = data['unit'].strip()
-        if unit.encode('latin1') in ugm3s:
-            val *= (293.15 * 8.314 / 101325. / 0.048)
+        if param == 'o3':
+            if unit.encode('latin1') in ugm3s:
+                val *= (293.15 * 8.314 / 101325. / 0.048)
+                unit = 'ppb'
+            elif unit in ('ppm'):
+                val *= 1000
+                unit = 'ppb'
+            if unit != 'ppb':
+                warn(f'***Unit warning: {unit} used as ppb for {param}')
             unit = 'ppb'
-        elif unit in ('ppm'):
-            val *= 1000
-            unit = 'ppb'
-        if unit != 'ppb':
-            print(unit)
+        elif param in ('pm25', 'pm10'):
+            if not unit.encode('latin1') in ugm3s:
+                warn(f'***Unit warning: {unit} used as {ugm3s[0]} for {param}')
+            unit = ugm3s[0]
+        else:
+            raise KeyError(
+                'Units must be unified for gridding.'
+                + ' Currently, only O3 and PM are coded.'
+            )
         dates.append(date)
         vals.append(val)
         rvals.append(rval)
@@ -156,7 +198,11 @@ for outdate in outputdates:
         outd['date'] = np.array([
             date.strftime('%Y-%m-%d %H:%M:%S%z') for date in dates
         ])
-        outd['O3PPB'] = vals
+        if param == 'o3':
+            outd['O3PPB'] = vals
+        else:
+            outd[outkey] = vals
+
         pd.DataFrame.from_dict(outd).to_csv(csvpath, index=False)
 
     if makencf:
@@ -178,6 +224,7 @@ for outdate in outputdates:
         )
         good = ddcounts > 0
         ovar[good[:, None]] = ddval[good]
+        ovar.units = unit.ljust(16)
         nvar[good[:, None]] = ddcounts[good]
         savf = outf.mask(values=0).save(
             ncfpath, format='NETCDF4_CLASSIC', complevel=1, verbose=verbose
